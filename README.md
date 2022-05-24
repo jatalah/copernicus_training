@@ -1,4 +1,4 @@
-# copernicus_training
+# Processing Copernicus with R and tidync
 
 A pipeline to extract and process Copernicus NetCDF data in a tidy format.
 
