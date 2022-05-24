@@ -1,0 +1,171 @@
+---
+title: "Copernicus Marine Service Mediterranean Sea training"
+author: "Javier Atalah"
+date: "19/05/2022"
+output: html_document
+---
+
+A pipeline to extract and process Copernicus NetCDF data in a tidy format.
+
+The script is based on the library tydinc. For details of the and tutorial see this blog <https://ropensci.org/blog/2019/11/05/tidync/>
+
+The examples are adapted from [Copernicus Marine Training Workshop for the Mediterranean sea - Edition 2022](https://marine.copernicus.eu/events/copernicus-marine-training-workshop-mediterranean-sea-edition-2022).
+
+```{r setup}
+library(tidyverse, quietly = T)
+library(tidync)
+```
+
+First download the SST data (or whatever data you are interested in) from the Copernicus [Marine Service Catalogue](https://resources.marine.copernicus.eu/products) using Python and the code below. You will need to replace your Copernicus login credentials in the code. You can also change the file name and output directory to your needs.
+
+Python can be accessed through Rstudio using the [reticulate library](https://rstudio.github.io/reticulate/).
+
+`import motuclient`
+
+`!python -m motuclient –motu https://nrt.cmems-du.eu/motu-web/Motu –service-id MEDSEA_ANALYSISFORECAST_PHY_006_013-TDS –product-id med-cmcc-tem-an-fc-h –longitude-min -17.2917 –longitude-max 36.2917 –latitude-min 30.1875 –latitude-max 45.9792 –date-min "2022-05-22 23:30:00" –date-max "2022-05-22 23:30:00" –depth-min 1.0182 –depth-max 1.0183 –variable thetao –out-dir <OUT_DIR> –out-name temp_22_may.nc –user <USERNAME> –pwd <PASSWORD>`
+
+If you don't have motuclient in Python, you will need to install it using:
+
+`!python -m pip install motuclient==1.8.4 --no-cache-dir`
+
+# Import data with tidync and check variables
+
+```{r}
+sst_may_22 <- tidync('nc_files/temp_22_may.nc')
+
+ncmeta::nc_grids('nc_files/temp_22_may.nc') %>% tidyr::unnest(cols = c(variables))
+
+ncmeta::nc_vars('nc_files/temp_22_may.nc') 
+
+```
+
+# Obtain the time units information and then use it to convert the raw value into a date-time
+
+```{r}
+ncmeta::nc_atts('nc_files/temp_22_may.nc', "time")  %>%
+  dplyr::select(value) %>% 
+  flatten_df() %>% 
+  pull(units)
+
+sst_may_22_t <- 
+  sst_may_22 %>% 
+  hyper_tibble() %>% 
+  mutate(time = lubridate::ymd_hms("1900-01-01 00:00:00", tz = "UTC") + time * 60)
+```
+
+# Plot the data
+
+```{r fig.height=4, fig.width=10}
+
+# get countries data for the map
+library(rnaturalearth)
+library(rnaturalearthdata)
+countries <- ne_countries(scale = "medium", returnclass = "sf")
+
+# plot 
+ggplot() +
+  # add raster layer
+  geom_tile(aes(x = lon, y = lat, fill = thetao), data = sst_may_22_t) +
+  # define color palette of raster layer
+  scale_fill_viridis_c(option = 'A', name = "°C") +
+  # add countries layers
+  geom_sf(
+    fill = grey(0.9),
+    color = grey(0.6),
+    lwd = 0.2,
+    data = countries
+  ) +
+  # define spatial extent
+  coord_sf(
+    xlim = range(sst_may_22_t$lon),
+    ylim = range(sst_may_22_t$lat),
+    expand = F,
+    ndiscr = 500
+  ) +
+  labs(title = "Sea Surface Temperature (SST) - Sunday 22 May 2022",
+       y = "Latitude") +
+  theme_minimal() 
+```
+
+## Plot vertical profiles
+
+We now use the model data to plot some chlorophyll vertical profiles, to visualize how the chlorophyll concentration changes with depth.
+
+First we read the data and check the time units to correct them.
+
+```{r}
+path <- 'nc_files/mod_bio.nc'
+mod_bio_dat <- tidync(path)
+
+ncmeta::nc_grids(path) %>% tidyr::unnest(cols = c(variables))
+ncmeta::nc_vars(path)
+
+ncmeta::nc_atts(path, "time")  %>%
+  dplyr::select(value) %>% 
+  flatten_df() %>% 
+  pull(units)
+```
+
+Then we define a location and two dates to plot using the `hyper_filter` function of the `tidync` library.
+
+```{r}
+mod_bio_dat_t <- 
+mod_bio_dat %>% 
+  hyper_filter(longitude  = between(longitude, 5, 5), 
+               latitude = between(latitude, 42.02, 42.03)) %>% 
+  hyper_tibble() %>% 
+  mutate(time = lubridate::ymd_hms("1970-01-01 00:00:00", tz = "UTC") + time,
+         month = lubridate::month(time))
+```
+
+We can now plot the vertical profile using `ggplot`
+
+```{r fig.width=4, fig.height=6}
+ggplot(mod_bio_dat_t, aes(depth, chl, color = factor(month))) +
+  geom_path () +
+  coord_flip() +
+  scale_x_reverse() +
+  labs(x= 'Depth (m)', y = Chl-italic(a)~(mg/m^3), parse = T) +
+  theme_minimal() +
+  scale_color_discrete(name = "month")
+```
+
+## Plot vertical slices
+
+This scrip is used to plot temperature on a vertical slice along a line.
+
+First we define the coordinates of the vertical slice using the tidync function `hyper_filter`.
+
+Then we convert it into a tibble suing `hyper_tibble` and convert the time format.
+
+```{r}
+## plot vertical slice
+mod_bio_dat_slice <-
+  mod_bio_dat %>%
+  hyper_filter(
+    longitude  = between(longitude, 13.2, 16.5),
+    latitude = between(latitude, 43.68, 43.7)
+  ) %>%
+  hyper_tibble() %>%
+  mutate(
+    time = lubridate::ymd_hms("1970-01-01 00:00:00", tz = "UTC") + time,
+    month = lubridate::month(time)
+  )
+
+
+```
+
+Now we `geom_tile` from the `ggplot` library to visualize the temperature vertical profile along the vertical slice.
+
+```{r}
+ggplot(mod_bio_dat_slice,aes(depth, longitude, fill  = chl ))+
+  geom_tile(width = 8) +
+  coord_flip() +
+  scale_x_reverse() +
+  labs(x = 'Depth (m)',
+       y = Chl - italic(a) ~ (mg / m ^ 3),
+       parse = T) +
+  theme_minimal() +
+  scale_color_discrete(name = "month") +
+  scale_fill_viridis_c()
+```
